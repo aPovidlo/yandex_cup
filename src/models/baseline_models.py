@@ -117,6 +117,7 @@ class ConvLSTMModel(L.LightningModule):
 
     def __init__(self):
         super().__init__()
+        self.save_hyperparameters()
         self.model = Seq2Seq(
             num_channels=1,
             num_kernels=32,

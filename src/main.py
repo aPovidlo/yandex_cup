@@ -7,7 +7,8 @@ import torch.utils.data as data
 import tqdm
 
 from data.datasets import RadarDataset
-from models.models import ConvLSTMModel, PersistantModel
+from models.baseline_models import ConvLSTMModel, PersistantModel
+from src.models.IAM4VP import ImplicitStackedAutoregressiveForVideoPrediction
 
 
 def prepare_data_loaders(train_batch_size=6, valid_batch_size=1, test_batch_size=1):
@@ -79,10 +80,29 @@ def main(model_name, tensorboard_path):
         process_test(model, test_loader)
 
     elif model_name == 'convlstm':
+        # score on valid set:
+        # score on test set: ~177
         model = ConvLSTMModel()
         trainer = L.Trainer(
             logger=L.pytorch.loggers.TensorBoardLogger(save_dir=tensorboard_path),
-            max_epochs=1
+            max_epochs=1,
+            default_root_dir='../../models/convlstm',
+            enable_checkpointing=True
+        )
+
+        trainer.fit(model, train_loader)
+        print(evaluate_on_val(model, valid_loader))
+        process_test(model, test_loader)
+
+    elif model_name == 'iam4vp':
+        # score on valid set:
+        # score on test set:
+        model = ImplicitStackedAutoregressiveForVideoPrediction()
+        trainer = L.Trainer(
+            logger=L.pytorch.loggers.TensorBoardLogger(save_dir=tensorboard_path),
+            max_epochs=1,
+            default_root_dir='../../models/convlstm',
+            enable_checkpointing=True
         )
 
         trainer.fit(model, train_loader)
@@ -95,7 +115,7 @@ def main(model_name, tensorboard_path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default='convlstm')
+    parser.add_argument('--model', default='iam4vp')
     parser.add_argument('--tensorboard_path', default='../reports/tensorboard')
     args = parser.parse_args()
     main(args.model, args.tensorboard_path)
