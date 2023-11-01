@@ -1,17 +1,22 @@
 import argparse
+import os
 
 import h5py
 import lightning as L
 import numpy as np
 import torch.utils.data as data
+import torch
 import tqdm
 
 from data.datasets import RadarDataset
 from models.baseline_models import ConvLSTMModel, PersistantModel
 from src.models.IAM4VP import ImplicitStackedAutoregressiveForVideoPrediction
 
+torch.cuda.empty_cache()
+torch.set_float32_matmul_precision('medium')
 
-def prepare_data_loaders(train_batch_size=6, valid_batch_size=1, test_batch_size=1):
+
+def prepare_data_loaders(train_batch_size=2, valid_batch_size=1, test_batch_size=1):
     path_to_train_data = '../data/raw/train'
     path_to_test_data = '../data/raw/test'
 
@@ -44,15 +49,15 @@ def evaluate_on_val(model, valid_loader):
         inputs, target = item
         output = model(inputs)
         rmses += np.sum((
-            np.square(target.detach().numpy() - output.detach().numpy())
-        ) * (target.detach().numpy() != -1), axis=(0, 2, 3, 4))
+            np.square(target.detach().cpu().numpy() - output.detach().cpu().numpy())
+        ) * (target.detach().cpu().numpy() != -1), axis=(0, 2, 3, 4))
 
     rmses /= len(valid_loader)
 
     return np.mean(np.sqrt(rmses))
 
 
-def process_test(model, test_loader, output_file='..data/processed/output.hdf5'):
+def process_test(model, test_loader, output_file='../data/processed/output.hdf5'):
     model.eval()
 
     for index, item in tqdm.tqdm(enumerate(test_loader)):
@@ -65,11 +70,11 @@ def process_test(model, test_loader, output_file='..data/processed/output.hdf5')
                 f_out.create_group(timestamp_out)
                 f_out[timestamp_out].create_dataset(
                     'intensity',
-                    data=output[0, index, 0].detach().numpy()
+                    data=output[0, index, 0].detach().cpu().numpy()
                 )
 
 
-def main(model_name, tensorboard_path):
+def main(model_name, tensorboard_path, chk_path=None):
     train_loader, valid_loader, test_loader = prepare_data_loaders()
 
     if model_name == 'persistant':
@@ -80,18 +85,25 @@ def main(model_name, tensorboard_path):
         process_test(model, test_loader)
 
     elif model_name == 'convlstm':
-        # score on valid set:
+        # score on valid set: 144
         # score on test set: ~177
-        model = ConvLSTMModel()
-        trainer = L.Trainer(
-            logger=L.pytorch.loggers.TensorBoardLogger(save_dir=tensorboard_path),
-            max_epochs=1,
-            default_root_dir='../../models/convlstm',
-            enable_checkpointing=True
-        )
+        if os.path.isfile(chk_path):
+            print('Model loaded from the checkpoint')
+            model = ConvLSTMModel.load_from_checkpoint(chk_path)
+            model.eval()
+        else:
+            model = ConvLSTMModel()
 
-        trainer.fit(model, train_loader)
-        print(evaluate_on_val(model, valid_loader))
+            trainer = L.Trainer(
+                logger=L.pytorch.loggers.TensorBoardLogger(save_dir=tensorboard_path),
+                max_epochs=5,
+                precision="bf16",
+                enable_checkpointing=True
+            )
+
+            trainer.fit(model, train_loader)
+
+        # print(evaluate_on_val(model, valid_loader))
         process_test(model, test_loader)
 
     elif model_name == 'iam4vp':
@@ -101,7 +113,7 @@ def main(model_name, tensorboard_path):
         trainer = L.Trainer(
             logger=L.pytorch.loggers.TensorBoardLogger(save_dir=tensorboard_path),
             max_epochs=1,
-            default_root_dir='../../models/convlstm',
+            precision="bf16",
             enable_checkpointing=True
         )
 
@@ -109,13 +121,17 @@ def main(model_name, tensorboard_path):
         print(evaluate_on_val(model, valid_loader))
         process_test(model, test_loader)
 
+        # It is required high resources for training
+        # raise NotImplementedError()
+
     else:
         print('Unknown model name')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default='iam4vp')
+    parser.add_argument('--model', default='convlstm')
     parser.add_argument('--tensorboard_path', default='../reports/tensorboard')
+    parser.add_argument('--chk_path', default='../reports/tensorboard/lightning_logs/version_0/checkpoints/epoch=4-step=85275.ckpt')
     args = parser.parse_args()
-    main(args.model, args.tensorboard_path)
+    main(args.model, args.tensorboard_path, args.chk_path)
