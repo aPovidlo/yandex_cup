@@ -6,6 +6,7 @@ import torch.utils.data as data
 class RadarDataset(data.Dataset):
     """
     Args:
+        data: name of using dataset
         list_of_files: list of hdfs5 files
         in_seq_len: input sequence length (1 = 10 min)
         out_seq_len: output sequence length (12 = 120 min)
@@ -19,7 +20,8 @@ class RadarDataset(data.Dataset):
             'events' - погодные явления
     """
 
-    def __init__(self, list_of_files, in_seq_len=4, out_seq_len=12, mode='overlap', with_time=False):
+    def __init__(self, data, list_of_files, in_seq_len=4, out_seq_len=12, mode='overlap', with_time=False):
+        self.data = data
         self.in_seq_len = in_seq_len
         self.out_seq_len = out_seq_len
         self.seq_len = in_seq_len + out_seq_len

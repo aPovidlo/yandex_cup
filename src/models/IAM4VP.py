@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from src.models.modules import ConvSC, ConvNeXt_block, Attention, ConvNeXt_bottle
 from torch import nn
 
+import numpy as np
+
 
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim):
@@ -113,6 +115,7 @@ class Predictor(nn.Module):
 
     def forward(self, x, time_emb):
         B, T, C, H, W = x.shape
+        # (1, 1024, 63, 63)
         x = x.reshape(B, T * C, H, W)
         z = self.st_block[0](x, time_emb)
         for i in range(1, self.N_T):
@@ -132,17 +135,19 @@ class IAM4VP(nn.Module):
         self.dec = Decoder(hid_S, C, N_S)
         self.attn = Attention(64)
         self.readout = nn.Conv2d(64, 1, 1)
-        self.mask_token = nn.Parameter(torch.zeros(10, hid_S, 16, 16))
+        self.mask_token = nn.Parameter(torch.zeros(N_T, hid_S, 63, 63))
         self.lp = LP(C, hid_S, N_S)
 
     def forward(self, x_raw, y_raw=None, t=None):
         B, T, C, H, W = x_raw.shape
+        _, Ty, _, _, _ = y_raw.shape
+
         x = x_raw.view(B * T, C, H, W)
         time_emb = self.time_mlp(t)
         embed, skip = self.enc(x)
         mask_token = self.mask_token.repeat(B, 1, 1, 1, 1)
 
-        for idx, pred in enumerate(y_raw):
+        for idx, pred in enumerate(y_raw.view(B * Ty, C, H, W)):
             embed2, _ = self.lp(pred)
             mask_token[:, idx, :, :, :] = embed2
 
@@ -151,12 +156,14 @@ class IAM4VP(nn.Module):
         z = embed.view(B, T, C_, H_, W_)
         z2 = mask_token
         z = torch.cat([z, z2], dim=1)
+        # (batch, seq_in, 64, 63, 63) (1, 64)
         hid = self.hid(z, time_emb)
         hid = hid.reshape(B * T, C_, H_, W_)
 
         Y = self.dec(hid, skip)
         Y = self.attn(Y)
         Y = self.readout(Y)
+
         return Y
 
 
@@ -166,7 +173,8 @@ class ImplicitStackedAutoregressiveForVideoPrediction(L.LightningModule):
         self.save_hyperparameters()
 
         self.model = IAM4VP(
-            shape_in=(4, 1, 252, 252),
+            # (T (seq_input + seq_output), channel, h, w)
+            shape_in=(16, 1, 252, 252),
             hid_S=64,
             hid_T=512,
             N_S=4,
@@ -174,14 +182,17 @@ class ImplicitStackedAutoregressiveForVideoPrediction(L.LightningModule):
         )
 
     def forward(self, x, y):
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        x = x.to(device=device)
-        t = torch.tensor(4 * 100).repeat(x.shape[0]).to(device)
-        output = self.model(x, y_raw=y.to(device), t=t)
+        x, t = x
+
+        x = x.to(device=self.model.readout.weight.device)
+        t = torch.tensor(np.array(t, dtype=np.int64)).repeat(x.shape[0])
+
+        output = self.model(x_raw=x, y_raw=y, t=t)
         return output
 
     def training_step(self, batch):
         x, y = batch
+        # x - shape (batch_size, seq_len, channel, h, w)
         out = self.forward(x, y)
         out[y == -1] = -1
         loss = F.mse_loss(out, y)
